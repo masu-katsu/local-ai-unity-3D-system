@@ -1,0 +1,207 @@
+# ============================================
+# Qwen 生成AI サーバー（GPU動作）
+# ============================================
+# コード生成・長文生成など重い処理を担当
+# llama-cpp-python で GGUF モデルを GPU (RTX3050 4GB) 上で実行
+# ============================================
+
+import os
+import re
+import logging
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+from typing import Optional
+from llama_cpp import Llama
+
+
+def clean_response(text: str) -> str:
+    """
+    Aggressively remove all instruction patterns and meta text
+    """
+    # First pass: remove entire lines with instruction keywords
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        # Skip lines containing instruction/step keywords
+        if any(kw in line for kw in ['指示', 'instruction', 'step', 'ステップ', 'Instruction', 'Step', '発語詰、']):
+            continue
+        # Skip lines with only brackets/metadata
+        if line.strip() and all(c in '[]{}()\[\]{}()\n' for c in line.strip()):
+            continue
+        cleaned_lines.append(line)
+    
+    text = '\n'.join(cleaned_lines)
+    
+    # Second pass: regex patterns for remaining cleanup
+    meta_patterns = [
+        r"\n\n+(?:この|その|上記の|以下の|以上の|下記の)[^\n]*$",
+        r"\n\n+(?:Answer|Response|Note|注[:：]).*$",
+        r"\n\n+-{3,}.*$",
+        r"^\s*\[.*?\]\s*$",
+        r"^\s*\{.*?\}\s*$",
+        r"^\s*\(.*?\)\s*$",
+    ]
+    for pattern in meta_patterns:
+        text = re.sub(pattern, "", text, flags=re.MULTILINE | re.DOTALL)
+    
+    # Remove excessive newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
+# ============================================
+# ログ設定
+# ============================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [Qwen] %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# ============================================
+# 環境変数・設定
+# ============================================
+MODEL_PATH = os.getenv("MODEL_PATH", "/models/qwen/Qwen2.5-Coder-3B-4bit.gguf")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
+N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "-1"))  # -1 = 全レイヤーGPU
+N_CTX = 8192  # Qwen2.5 のコンテキストウィンドウ
+
+# ============================================
+# FastAPI 初期化
+# ============================================
+app = FastAPI(title="Qwen 生成AI", version="1.0.0")
+
+# ============================================
+# モデル読み込み（起動時に1回だけ）
+# ============================================
+llm: Optional[Llama] = None
+
+
+@app.on_event("startup")
+async def load_model():
+    global llm
+
+    logger.info("=" * 40)
+    logger.info("Qwen モデル読み込み開始...")
+    logger.info(f"  モデルパス: {MODEL_PATH}")
+    logger.info(f"  GPU レイヤー数: {N_GPU_LAYERS}")
+    logger.info(f"  最大トークン: {MAX_TOKENS}")
+
+    try:
+        llm = Llama(
+            model_path=MODEL_PATH,
+            n_ctx=N_CTX,
+            n_gpu_layers=N_GPU_LAYERS,
+            verbose=False,
+        )
+        logger.info("Qwen モデル読み込み完了 ✓")
+    except Exception as e:
+        logger.error(f"モデル読み込み失敗: {e}")
+        logger.error("モデルファイルが存在するか確認してください")
+        llm = None
+
+
+# ============================================
+# リクエスト・レスポンスモデル
+# ============================================
+class GenerateRequest(BaseModel):
+    message: str = Field(..., description="ユーザーのメッセージ")
+    context: list[dict] = Field(default=[], description="過去の関連会話")
+
+
+class GenerateResponse(BaseModel):
+    response: str = Field(..., description="AIの応答")
+    tokens_used: int = Field(default=0, description="使用トークン数")
+
+
+# ============================================
+# プロンプト構築
+# ============================================
+def build_prompt(message: str, context: list[dict]) -> str:
+    """
+    Qwen 用のプロンプトを構築する
+
+    過去の関連会話を「会話ターン」として埋め込む
+    → モデルが自然に文脈を理解し、そのまま出力しなくなる
+    """
+    system_content = (
+        "あなたは高度な日本語AIアシスタントです。\n"
+        "コード生成、文章作成、翻訳、分析など専門的なタスクが得意です。\n"
+        "正確で詳細な回答を提供してください。\n"
+    )
+
+    # Qwen チャットテンプレート (ChatML形式) - system
+    prompt = f"<|im_start|>system\n{system_content}<|im_end|>\n"
+
+    # 過去の関連会話を「会話ターン」として追加
+    if context:
+        for conv in context:
+            user_msg = conv.get("user_message", "")
+            ai_resp = conv.get("ai_response", "")[:150]
+            prompt += f"<|im_start|>user\n{user_msg}<|im_end|>\n"
+            prompt += f"<|im_start|>assistant\n{ai_resp}<|im_end|>\n"
+
+    # 現在のユーザーメッセージ
+    prompt += f"<|im_start|>user\n{message}<|im_end|>\n"
+    prompt += "<|im_start|>assistant\n"
+
+    return prompt
+
+
+# ============================================
+# エンドポイント
+# ============================================
+@app.get("/health")
+async def health():
+    """ヘルスチェック"""
+    return {
+        "status": "ok" if llm is not None else "model_not_loaded",
+        "model": "Qwen2.5-Coder-3B",
+        "device": "gpu",
+    }
+
+
+@app.post("/generate", response_model=GenerateResponse)
+async def generate(request: GenerateRequest):
+    """テキスト生成"""
+    if llm is None:
+        return GenerateResponse(
+            response="モデルがまだ読み込まれていません。しばらくお待ちください。",
+            tokens_used=0,
+        )
+
+    logger.info(f"生成リクエスト: {request.message[:50]}...")
+
+    try:
+        # プロンプト構築
+        prompt = build_prompt(request.message, request.context)
+
+        # 生成実行
+        output = llm(
+            prompt,
+            max_tokens=MAX_TOKENS,
+            temperature=0.7,
+            top_p=0.9,
+            stop=["<|im_end|>", "<|im_start|>"],
+            echo=False,
+        )
+
+        raw_text = output["choices"][0]["text"].strip()
+        response_text = clean_response(raw_text)
+        tokens_used = output.get("usage", {}).get("total_tokens", 0)
+
+        if raw_text != response_text:
+            logger.info(f"メタ解説を除去: {len(raw_text)} → {len(response_text)}文字")
+        logger.info(f"生成完了: {tokens_used}トークン使用")
+
+        return GenerateResponse(
+            response=response_text,
+            tokens_used=tokens_used,
+        )
+
+    except Exception as e:
+        logger.error(f"生成エラー: {e}")
+        return GenerateResponse(
+            response="申し訳ありません、応答の生成中にエラーが発生しました。",
+            tokens_used=0,
+        )

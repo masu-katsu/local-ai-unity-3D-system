@@ -1,0 +1,109 @@
+# ============================================
+# ローカルAIアプリ Docker Compose
+# ============================================
+
+services:
+
+  # ------------------------------------------
+  # FastAPI 制御サーバー（司令塔）
+  # ------------------------------------------
+  fastapi:
+    build:
+      context: ./fastapi
+      dockerfile: Dockerfile
+    container_name: ai-fastapi
+    ports:
+      - "${FASTAPI_PORT:-8000}:8000"        # 外部公開ポート（Unity・スマホからアクセス）
+    environment:
+      - PHI3_URL=http://phi3:8001
+      - QWEN_URL=http://qwen:8002
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - API_KEY=${API_KEY:-your-secret-key}
+      - LOG_DIR=/logs
+    volumes:
+      - ../02_logs/conversations:/logs       # 会話ログの保存先
+    networks:
+      - frontend    # 外部アクセス可能
+      - backend     # 内部AI通信
+    depends_on:
+      - phi3
+      - chromadb
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # Phi3 会話AI（CPU動作）
+  # ------------------------------------------
+  phi3:
+    build:
+      context: ./phi3
+      dockerfile: Dockerfile
+    container_name: ai-phi3
+    environment:
+      - MODEL_PATH=/models/phi3/Phi-3-mini-4k-instruct-q4.gguf
+      - MAX_TOKENS=${PHI3_MAX_TOKENS:-512}
+      - THREADS=${PHI3_THREADS:-4}
+    volumes:
+      - ../03_models/phi3:/models/phi3:ro    # モデルファイル（読み取り専用）
+    networks:
+      - backend     # 内部ネットワークのみ（外部非公開）
+    deploy:
+      resources:
+        limits:
+          memory: 8G                          # メモリ上限 8GB
+        reservations:
+          memory: 4G                          # 最低確保 4GB
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # Qwen 生成AI（GPU動作）
+  # ------------------------------------------
+  qwen:
+    build:
+      context: ./qwen
+      dockerfile: Dockerfile
+    container_name: ai-qwen
+    environment:
+      - MODEL_PATH=/models/qwen/Qwen2.5-Coder-3B-4bit.gguf
+      - MAX_TOKENS=${QWEN_MAX_TOKENS:-2048}
+      - N_GPU_LAYERS=-1
+    volumes:
+      - ../03_models/qwen:/models/qwen:ro    # モデルファイル（読み取り専用）
+    networks:
+      - backend     # 内部ネットワークのみ
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1                        # GPU 1枚使用
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ------------------------------------------
+  # ChromaDB ベクトルDB（会話履歴検索用）
+  # ------------------------------------------
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: ai-chromadb
+    environment:
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - ../02_logs/chroma_db:/chroma/chroma   # データ永続化
+    networks:
+      - backend     # 内部ネットワークのみ
+    restart: unless-stopped
+
+# ==============================================
+# ネットワーク定義
+# ==============================================
+networks:
+  frontend:
+    driver: bridge
+    # FastAPIのみが参加 → 外部（Unity/スマホ）からアクセス可能
+
+  backend:
+    driver: bridge
+    internal: true
+    # internal: true → 外部からアクセス不可
+    # FastAPI, Phi3, Qwen, ChromaDB のみが通信可能
