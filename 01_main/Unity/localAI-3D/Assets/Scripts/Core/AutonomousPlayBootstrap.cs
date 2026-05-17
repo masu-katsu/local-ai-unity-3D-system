@@ -142,14 +142,16 @@ public class AutonomousPlayBootstrap : MonoBehaviour
 
         GameObject root = new GameObject(WaypointRootName);
 
+        // 床のスケール(20, 1, 4)に合わせてポイントを配置
+        // PlaneのサイズはX軸: -10～10（スケール20で-100～100）、Z軸: -2～2（スケール4で-8～8）
         Vector3[] points =
         {
-            new(-9f, 0f, -1.8f),   // 左前
-            new(9f, 0f, -1.8f),    // 右前
-            new(9f, 0f, 1.8f),     // 右奥
-            new(-9f, 0f, 1.8f),    // 左奥
-            new(0f, 0f, -2f),      // 前中央
-            new(0f, 0f, 2f)        // 奥中央
+            new(-80f, 0f, -6f),    // 左前
+            new(80f, 0f, -6f),     // 右前
+            new(80f, 0f, 6f),      // 右奥
+            new(-80f, 0f, 6f),     // 左奥
+            new(0f, 0f, -6f),      // 前中央
+            new(0f, 0f, 6f)        // 奥中央
         };
 
         for (int i = 0; i < points.Length; i++)
