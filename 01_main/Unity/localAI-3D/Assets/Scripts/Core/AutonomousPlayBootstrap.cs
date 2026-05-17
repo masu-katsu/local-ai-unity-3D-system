@@ -1,6 +1,11 @@
 using System.Collections;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.AI;
+
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 /// <summary>
 /// Play 時に床・Waypoint・キャラクターを構築する。
@@ -33,7 +38,24 @@ public class AutonomousPlayBootstrap : MonoBehaviour
             gameObject.AddComponent<CharacterBehaviorStarter>();
     }
 
+    /// <summary>
+    /// エディタメニューからモデルを設定する。
+    /// </summary>
+    public void SetCharacterModel(GameObject model, RuntimeAnimatorController animator)
+    {
+        characterModelPrefab = model;
+        animatorController = animator;
+    }
+
     void Start()
+    {
+        // エディタメニュー「3D model/Build」から手動でセットアップされる
+    }
+
+    /// <summary>
+    /// UIから呼び出されるメソッド。シーンを手動でセットアップする。
+    /// </summary>
+    public void ManualSetupWorld()
     {
         StartCoroutine(SetupWorld());
     }
@@ -47,14 +69,42 @@ public class AutonomousPlayBootstrap : MonoBehaviour
         yield return null;
 
         EnsureWaypoints();
+        yield return null;
+
         EnsureCharacter();
+        yield return null;
+        yield return null;
+
         SetupCamera();
+        yield return null;
 
         CharacterBrain brain = FindObjectOfType<CharacterBrain>();
         if (brain != null)
+        {
             brain.BeginBehavior();
+        }
+        else
+        {
+            Debug.LogError("[自律キャラ] CharacterBrainが見つかりません");
+        }
 
         Debug.Log("[自律キャラ] セットアップ完了。キャラクターが行動を開始します。");
+    }
+
+    /// <summary>
+    /// エディタメニューから同期的にセットアップを実行する。
+    /// </summary>
+    public void EditorSetupWorld()
+    {
+        Debug.Log("[エディタセットアップ] 開始");
+
+        EnsureFloor();
+        EnsureNavMesh();
+        EnsureWaypoints();
+        EnsureCharacter();
+        SetupCamera();
+
+        Debug.Log("[エディタセットアップ] 完了（Playモードで自動開始）");
     }
 
     void EnsureFloor()
@@ -65,7 +115,7 @@ public class AutonomousPlayBootstrap : MonoBehaviour
         GameObject floor = GameObject.CreatePrimitive(PrimitiveType.Plane);
         floor.name = FloorName;
         floor.transform.position = Vector3.zero;
-        floor.transform.localScale = new Vector3(2.5f, 1f, 2.5f);
+        floor.transform.localScale = new Vector3(20f, 1f, 4f);  // 床をさらに大きく
     }
 
     void EnsureNavMesh()
@@ -94,12 +144,12 @@ public class AutonomousPlayBootstrap : MonoBehaviour
 
         Vector3[] points =
         {
-            new(-6f, 0f, -6f),
-            new(6f, 0f, -6f),
-            new(6f, 0f, 6f),
-            new(-6f, 0f, 6f),
-            new(0f, 0f, -7f),
-            new(0f, 0f, 7f)
+            new(-9f, 0f, -1.8f),   // 左前
+            new(9f, 0f, -1.8f),    // 右前
+            new(9f, 0f, 1.8f),     // 右奥
+            new(-9f, 0f, 1.8f),    // 左奥
+            new(0f, 0f, -2f),      // 前中央
+            new(0f, 0f, 2f)        // 奥中央
         };
 
         for (int i = 0; i < points.Length; i++)
@@ -132,15 +182,35 @@ public class AutonomousPlayBootstrap : MonoBehaviour
 
         if (characterModelPrefab == null)
         {
-            Debug.LogError("[自律キャラ] untitled.fbx が見つかりません。");
+            Debug.LogError("[自律キャラ] characterModelPrefab が null です。");
             return;
         }
 
+        Debug.Log($"[EnsureCharacter] モデルプリフェブをインスタンシエート開始: {characterModelPrefab.name}");
+
         GameObject root = new GameObject(CharacterName);
         GameObject model = Instantiate(characterModelPrefab, root.transform);
+        
+        if (model == null)
+        {
+            Debug.LogError("[自律キャラ] Instantiate に失敗しました。");
+            Destroy(root);
+            return;
+        }
+
         model.name = "Model";
         model.transform.localPosition = Vector3.zero;
         model.transform.localRotation = Quaternion.identity;
+
+        Debug.Log($"[EnsureCharacter] モデル作成完了。子オブジェクト数: {root.transform.childCount}");
+
+        // エディタモードでのマテリアル設定の修復
+#if UNITY_EDITOR
+        if (!Application.isPlaying)
+        {
+            RepairMaterialsInEditorMode(model);
+        }
+#endif
 
         root.AddComponent<CharacterStateMachine>();
 
@@ -161,6 +231,47 @@ public class AutonomousPlayBootstrap : MonoBehaviour
 
         WireBrain(root);
     }
+
+#if UNITY_EDITOR
+    static void RepairMaterialsInEditorMode(GameObject model)
+    {
+        // FBXアセットのマテリアルを取得
+        string fbxPath = "Assets/untitled.fbx";
+        Object[] fbxAssets = AssetDatabase.LoadAllAssetsAtPath(fbxPath);
+        
+        Material[] originalMaterials = System.Array.FindAll(fbxAssets, obj => obj is Material).Cast<Material>().ToArray();
+        
+        if (originalMaterials.Length == 0)
+        {
+            Debug.LogWarning("[RepairMaterialsInEditorMode] FBXから直接マテリアルが見つかりません。");
+            return;
+        }
+
+        Debug.Log($"[RepairMaterialsInEditorMode] FBXアセットから {originalMaterials.Length} 個のマテリアルを取得");
+
+        Renderer[] renderers = model.GetComponentsInChildren<Renderer>();
+        for (int i = 0; i < renderers.Length && i < originalMaterials.Length; i++)
+        {
+            Material mat = originalMaterials[i];
+            renderers[i].sharedMaterial = mat;
+            
+            // ナチュラルな見た目に調整
+            mat.SetFloat("_Metallic", 0.3f);  // メタリック値を下げる（テカテカを減らす）
+            mat.SetFloat("_Glossiness", 0.4f);  // グロッシネス値を下げる
+            
+            // テクスチャを割り当て直す
+            Texture2D roughnessTexture = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/texture_roughness.png");
+            if (roughnessTexture != null)
+                mat.SetTexture("_MetallicGlossMap", roughnessTexture);
+            
+            Texture2D normalTexture = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/texture_normal.png");
+            if (normalTexture != null)
+                mat.SetTexture("_BumpMap", normalTexture);
+            
+            Debug.Log($"[RepairMaterialsInEditorMode] レンダラー{i}に {mat.name} を割り当て（メタリック=0.3, グロッシネス=0.4）");
+        }
+    }
+#endif
 
     static bool HasRequiredComponents(GameObject character)
     {
@@ -184,19 +295,28 @@ public class AutonomousPlayBootstrap : MonoBehaviour
         Renderer[] renderers = model.GetComponentsInChildren<Renderer>();
         if (renderers.Length == 0)
         {
+            Debug.LogWarning("[FitCharacter] レンダラーが見つかりません");
             root.transform.position = Vector3.zero;
             return;
         }
+
+        Debug.Log($"[FitCharacter] レンダラー数: {renderers.Length}");
 
         Bounds bounds = renderers[0].bounds;
         for (int i = 1; i < renderers.Length; i++)
             bounds.Encapsulate(renderers[i].bounds);
 
+        Debug.Log($"[FitCharacter] バウンズ: center={bounds.center}, size={bounds.size}, min={bounds.min}, max={bounds.max}");
+
         float scale = 1f;
         if (bounds.size.y < 0.5f || bounds.size.y > 3f)
             scale = 1.6f / Mathf.Max(bounds.size.y, 0.01f);
 
+        Debug.Log($"[FitCharacter] スケール前: {model.transform.localScale}, 新しいスケール: {Vector3.one * scale}");
         model.transform.localScale = Vector3.one * scale;
+
+        // モデルを5倍の大きさにする
+        model.transform.localScale *= 5f;
 
         renderers = model.GetComponentsInChildren<Renderer>();
         bounds = renderers[0].bounds;
@@ -204,6 +324,7 @@ public class AutonomousPlayBootstrap : MonoBehaviour
             bounds.Encapsulate(renderers[i].bounds);
 
         float y = Mathf.Max(0.05f, -bounds.min.y + 0.05f);
+        Debug.Log($"[FitCharacter] 新しい位置: y={y}, バウンズ: min={bounds.min}, max={bounds.max}");
         root.transform.position = new Vector3(0f, y, 0f);
     }
 
