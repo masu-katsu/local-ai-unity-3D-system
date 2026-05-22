@@ -23,7 +23,8 @@ public class MovementController : MonoBehaviour
         get
         {
             if (useFallback && hasDestination)
-                return fallbackMoveSpeed;
+                // NavMeshAgent の速度を参考にしてフォールバック速度を設定
+                return agent.speed;
 
             return agent.velocity.magnitude;
         }
@@ -58,7 +59,8 @@ public class MovementController : MonoBehaviour
         Vector3 toTarget = target - transform.position;
         if (toTarget.sqrMagnitude > 0.01f)
         {
-            Vector3 step = toTarget.normalized * (fallbackMoveSpeed * Time.deltaTime);
+            // NavMeshAgent の速度を使用
+            Vector3 step = toTarget.normalized * (agent.speed * Time.deltaTime);
             if (step.sqrMagnitude > toTarget.sqrMagnitude)
                 transform.position = target;
             else

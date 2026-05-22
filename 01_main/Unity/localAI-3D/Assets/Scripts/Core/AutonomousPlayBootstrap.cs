@@ -114,8 +114,13 @@ public class AutonomousPlayBootstrap : MonoBehaviour
 
         GameObject floor = GameObject.CreatePrimitive(PrimitiveType.Plane);
         floor.name = FloorName;
-        floor.transform.position = Vector3.zero;
-        floor.transform.localScale = new Vector3(20f, 1f, 4f);  // 床をさらに大きく
+        
+        // X: 0～719, Z: -30～0
+        // Plane: default 10x10
+        // スケール: X = 719/10 = 71.9, Z = 30/10 = 3
+        // 位置: X中心 = 359.5, Z中心 = -15
+        floor.transform.localScale = new Vector3(71.9f, 0.1f, 3f);
+        floor.transform.position = new Vector3(359.5f, -0.05f, -15f);
     }
 
     void EnsureNavMesh()
@@ -142,16 +147,17 @@ public class AutonomousPlayBootstrap : MonoBehaviour
 
         GameObject root = new GameObject(WaypointRootName);
 
-        // 床のスケール(20, 1, 4)に合わせてポイントを配置
-        // PlaneのサイズはX軸: -10～10（スケール20で-100～100）、Z軸: -2～2（スケール4で-8～8）
+        // 床のスケール(71.9, 0.1, 3)、位置(359.5, -0.05, -15)に合わせて
+        // X: 0～719, Z: -30～0 の範囲に均等に配置
+        // ChatUIとの競合を還けるため、Z=-30側のみに配置
         Vector3[] points =
         {
-            new(-80f, 0f, -6f),    // 左前
-            new(80f, 0f, -6f),     // 右前
-            new(80f, 0f, 6f),      // 右奥
-            new(-80f, 0f, 6f),     // 左奥
-            new(0f, 0f, -6f),      // 前中央
-            new(0f, 0f, 6f)        // 奥中央
+            new(0f, 0f, -30f),          // 左奥
+            new(359.5f, 0f, -30f),      // 中奥
+            new(719f, 0f, -30f),        // 右奥
+            new(0f, 0f, -15f),          // 左中間
+            new(359.5f, 0f, -15f),      // 中中間
+            new(719f, 0f, -15f)         // 右中間
         };
 
         for (int i = 0; i < points.Length; i++)
@@ -163,6 +169,8 @@ public class AutonomousPlayBootstrap : MonoBehaviour
         }
 
         root.AddComponent<WaypointManager>();
+        
+        Debug.Log($"[EnsureWaypoints] {points.Length}個のウェイポイントを作成しました");
     }
 
     void EnsureCharacter()
@@ -217,12 +225,13 @@ public class AutonomousPlayBootstrap : MonoBehaviour
         root.AddComponent<CharacterStateMachine>();
 
         NavMeshAgent agent = root.AddComponent<NavMeshAgent>();
-        agent.speed = 2f;
+        // 50倍スケール対応のNavMeshAgent設定
+        agent.speed = 50f;           // 50倍スケール対応
         agent.angularSpeed = 360f;
-        agent.acceleration = 12f;
-        agent.stoppingDistance = 0.3f;
-        agent.radius = 0.3f;
-        agent.height = 1.8f;
+        agent.acceleration = 60f;     // 50倍スケール対応
+        agent.stoppingDistance = 15f;  // 50倍スケール対応
+        agent.radius = 15f;            // 50倍スケール対応
+        agent.height = 90f;            // 50倍スケール対応
         agent.autoBraking = true;
 
         root.AddComponent<MovementController>();
@@ -317,8 +326,8 @@ public class AutonomousPlayBootstrap : MonoBehaviour
         Debug.Log($"[FitCharacter] スケール前: {model.transform.localScale}, 新しいスケール: {Vector3.one * scale}");
         model.transform.localScale = Vector3.one * scale;
 
-        // モデルを5倍の大きさにする
-        model.transform.localScale *= 5f;
+        // モデルを50倍の大きさにする
+        model.transform.localScale *= 50f;
 
         renderers = model.GetComponentsInChildren<Renderer>();
         bounds = renderers[0].bounds;
@@ -336,7 +345,8 @@ public class AutonomousPlayBootstrap : MonoBehaviour
         if (cam == null)
             return;
 
-        cam.transform.position = new Vector3(0f, 8f, -14f);
-        cam.transform.rotation = Quaternion.Euler(22f, 0f, 0f);
+        // 50倍スケールのキャラクターに対応したカメラ配置
+        cam.transform.position = new Vector3(0f, 250f, -400f);
+        cam.transform.rotation = Quaternion.Euler(15f, 0f, 0f);
     }
 }

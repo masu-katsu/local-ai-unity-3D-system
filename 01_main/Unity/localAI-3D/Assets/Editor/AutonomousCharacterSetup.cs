@@ -52,6 +52,11 @@ public static class AutonomousCharacterSetup
         EnsureFolders();
         CharacterRigSetup.ReimportFbx();
         RuntimeAnimatorController controller = CreateAnimatorController();
+        if (controller == null)
+        {
+            Debug.LogError("[自律キャラ] AnimatorController の作成に失敗しました");
+            return;
+        }
         OpenAndBuildScene(controller);
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
